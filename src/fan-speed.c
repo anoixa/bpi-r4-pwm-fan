@@ -4,7 +4,6 @@
 #include <string.h>
 #include <fcntl.h>
 #include <signal.h>
-#include <math.h>
 
 #include "fan_config.h"
 
@@ -36,9 +35,9 @@ void set_duty_cycle(int duty, int *last_duty) {
     snprintf(buf, sizeof(buf), "%d", duty);
     if (write_file(DUTY_PATH, buf) == 0) {
         *last_duty = duty;
-        LOG_CUSTOM_INFO("Set duty=%d", duty);
+        LOG_CUSTOM_INFO("Set duty cycle to %d", duty);
     } else {
-        LOG_CUSTOM_ERROR("Failed to set duty=%d", duty);
+        LOG_CUSTOM_ERROR("Failed to set duty cycle to %d", duty);
     }
 }
 
@@ -55,12 +54,11 @@ float smooth_temperature(float new_temp, float *smoothed_temp) {
 int read_temperature(int *temp) {
     FILE *fp = fopen(TEMP_PATH, "r");
     if (!fp) {
-        LOG_CUSTOM_ERROR("Temp read failed");
+        LOG_CUSTOM_ERROR("Failed to read temperature file");
         return -1;
     }
-
     if (fscanf(fp, "%d", temp) != 1) {
-        LOG_CUSTOM_ERROR("Temp parse failed");
+        LOG_CUSTOM_ERROR("Failed to parse temperature value");
         fclose(fp);
         return -1;
     }
@@ -68,7 +66,6 @@ int read_temperature(int *temp) {
     return 0;
 }
 
-// 状态转换函数
 FanState get_next_state(FanState current, float temp) {
     switch (current) {
         case FAN_STATE_OFF:
@@ -99,21 +96,72 @@ int get_duty_by_state(FanState state) {
     }
 }
 
-int adjust_fan_speed(int *last_duty, float *smoothed_temp) {
+int adjust_fan_speed(int *last_duty, float *smoothed_temp, float *last_temp) {
     int temp_raw = 0;
     if (read_temperature(&temp_raw) != 0) return -1;
 
     float temp = smooth_temperature((float)temp_raw, smoothed_temp);
-    FanState next = get_next_state(current_state, temp);
+    float slope = (*smoothed_temp - *last_temp) / 5.0f;
+    *last_temp = *smoothed_temp;
 
-    if (next != current_state) {
-        current_state = next;
+    FanState next_state = current_state;
+
+    if (temp < TEMP_OFF_MAX) {
+        next_state = FAN_STATE_OFF;
+    } else if (slope > 500) {
+        LOG_CUSTOM_INFO("Temperature rising rapidly, boosting to high speed");
+        next_state = FAN_STATE_HIGH;
+    } else {
+        next_state = get_next_state(current_state, temp);
+    }
+
+    if (next_state != current_state) {
+        current_state = next_state;
         int new_duty = get_duty_by_state(current_state);
         set_duty_cycle(new_duty, last_duty);
         LOG_CUSTOM_INFO("State changed: temp=%.1f°C, state=%d", temp / 1000.0, current_state);
     }
 
     return 0;
+}
+
+int init_pwm() {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", PWM_PERIOD);
+
+    // 导出PWM
+    if (access(PWM_FAN_PATH, F_OK) != 0) {
+        if (write_file(EXPORT_PATH, "1") < 0) {
+            LOG_CUSTOM_ERROR("Failed to export PWM interface");
+            return -1;
+        }
+        sleep(1);
+    }
+
+    // 设置周期
+    if (write_file(PERIOD_PATH, buf) < 0) {
+        LOG_CUSTOM_ERROR("Failed to set PWM period");
+        return -1;
+    }
+
+    // 设置极性
+    if (write_file(POLARITY_PATH, PWM_POLARITY) < 0) {
+        LOG_CUSTOM_ERROR("Failed to set PWM polarity");
+        return -1;
+    }
+
+    // 启用PWM
+    if (write_file(ENABLE_PATH, "1") < 0) {
+        LOG_CUSTOM_ERROR("Failed to enable PWM output");
+        return -1;
+    }
+
+    return 0;
+}
+
+void cleanup_pwm() {
+    write_file(ENABLE_PATH, "0");
+    LOG_CUSTOM_INFO("PWM output disabled");
 }
 
 int main() {
@@ -124,35 +172,28 @@ int main() {
     int last_duty = -1;
     int initial_temp = 0;
     if (read_temperature(&initial_temp)) {
-        LOG_CUSTOM_ERROR("Initial temp read failed");
+        LOG_CUSTOM_ERROR("Failed to read initial temperature");
+        closelog();
         return -1;
     }
+
     float smoothed_temp = (float)initial_temp;
+    float last_temp = smoothed_temp;
 
-    if (access(PWM_FAN_PATH, F_OK) != 0) {
-        if (write_file(EXPORT_PATH, "1") < 0) {
-            LOG_CUSTOM_ERROR("Export failed!");
-            closelog();
-            return -1;
-        }
-        sleep(1);
-    }
-
-    if (write_file(PERIOD_PATH, "10000") < 0 || write_file(POLARITY_PATH, "normal") < 0 || write_file(ENABLE_PATH, "1") < 0) {
-        LOG_CUSTOM_ERROR("PWM init failed!");
+    if (init_pwm() != 0) {
         closelog();
         return -1;
     }
 
     set_duty_cycle(DUTY_LOW, &last_duty);
-    LOG_CUSTOM_INFO("Service started");
+    LOG_CUSTOM_INFO("Fan control service started");
 
     int tick = 0;
     while (running) {
         sleep(5);
         tick++;
 
-        if (adjust_fan_speed(&last_duty, &smoothed_temp) != 0) continue;
+        if (adjust_fan_speed(&last_duty, &smoothed_temp, &last_temp) != 0) continue;
 
         if (tick >= 180) {
             tick = 0;
@@ -160,8 +201,8 @@ int main() {
         }
     }
 
-    write_file(ENABLE_PATH, "0");
-    LOG_CUSTOM_INFO("Service stopped");
+    cleanup_pwm();
+    LOG_CUSTOM_INFO("Fan control service stopped");
     closelog();
     return 0;
 }
