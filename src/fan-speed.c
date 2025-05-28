@@ -160,8 +160,17 @@ int init_pwm() {
 }
 
 void cleanup_pwm() {
-    write_file(ENABLE_PATH, "0");
-    LOG_CUSTOM_INFO("PWM output disabled");
+    if (access(PWM_FAN_PATH, F_OK) == 0) {
+        if (write_file(ENABLE_PATH, "0") < 0) {
+            LOG_CUSTOM_ERROR("Failed to disable PWM output");
+        }
+        if (write_file(UNEXPORT_PATH, "1") < 0) {
+            LOG_CUSTOM_ERROR("Failed to unexport PWM interface");
+        }
+        LOG_CUSTOM_INFO("PWM output disabled and unexported");
+    } else {
+        LOG_CUSTOM_INFO("PWM interface not active, nothing to clean up");
+    }
 }
 
 int main() {

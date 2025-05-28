@@ -9,6 +9,7 @@
 #define POLARITY_PATH "/sys/class/pwm/pwmchip0/pwm1/polarity"
 #define ENABLE_PATH "/sys/class/pwm/pwmchip0/pwm1/enable"
 #define EXPORT_PATH "/sys/class/pwm/pwmchip0/export"
+#define UNEXPORT_PATH "/sys/class/pwm/pwmchip0/unexport"
 #define PWM_FAN_PATH "/sys/class/pwm/pwmchip0/pwm1"
 
 // 温度路径
